@@ -1,62 +1,71 @@
-import requests
-import yfinance as yf
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LinearRegression
 import streamlit as st
+import numpy as np
+import pandas as pd
+import yfinance as yf
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense
+import plotly.graph_objs as go
 
-# Fetch stock data
-stock_symbol = "AAPL"  # You can change this to any stock symbol
-data = yf.download(stock_symbol, start="2020-01-01", end="2023-12-31")
+# Function to create dataset for prediction
+def create_dataset(data, look_back=100):
+    X, Y = [], []
+    for i in range(len(data) - look_back):
+        X.append(data[i:(i + look_back), 0])
+        Y.append(data[i + look_back, 0])
+    return np.array(X), np.array(Y)
 
-# Display the data
-st.title(f"{stock_symbol} Stock Price Prediction")
-st.write("Fetching historical stock data...")
+# Streamlit app
+def main():
+    st.title("Stock Price Prediction App")
+    st.sidebar.title('Stock Price Forecasting App')
 
-# Show the last few rows of the data
-st.write(data.tail())
+    # User input for stock ticker symbol
+    stock_symbol = st.sidebar.text_input('Enter Stock Ticker Symbol (e.g., MSFT):')
 
-# Prepare the data for prediction
-data['Date'] = data.index
-data['Day'] = np.arange(len(data))  # Create a day column for regression
+    # Date range input
+    start_date = st.sidebar.date_input('Select Start Date:', pd.to_datetime('2000-01-01'))
+    end_date = st.sidebar.date_input('Select End Date:', pd.to_datetime('today'))
 
-# Select relevant columns
-df_historical = data[['Day', 'Close']].reset_index(drop=True)
+    if stock_symbol:
+        # Load stock data
+        stock_data = yf.download(stock_symbol, start=start_date, end=end_date)
+        st.subheader('Stock Data')
+        st.write(stock_data)
 
-# Split the data into training and testing sets
-X = df_historical[['Day']]
-y = df_historical['Close']
+        # Data preprocessing
+        data = stock_data['Close'].values.reshape(-1, 1)
+        scaler = MinMaxScaler(feature_range=(0, 1))
+        scaled_data = scaler.fit_transform(data)
 
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        # Create training and testing datasets
+        look_back = 100
+        X, y = create_dataset(scaled_data, look_back)
+        X = X.reshape(X.shape[0], X.shape[1], 1)
 
-# Create and train the model
-model = LinearRegression()
-model.fit(X_train, y_train)
+        # Train the model
+        model = Sequential()
+        model.add(Dense(100, activation='relu', input_shape=(look_back, 1)))
+        model.add(Dense(1))
+        model.compile(optimizer='adam', loss='mean_squared_error')
+        model.fit(X, y, epochs=50, batch_size=32)
 
-# Predict next day's price
-next_day = np.array([[len(df_historical)]])  # Predict for the next day
-predicted_price = model.predict(next_day)
-st.write(f"Predicted closing price for Day {len(df_historical) + 1}: ${predicted_price[0]:.2f}")
+        # Predict future prices
+        last_100_days = scaled_data[-look_back:]
+        last_100_days = last_100_days.reshape((1, look_back, 1))
+        predicted_price = model.predict(last_100_days)
+        predicted_price = scaler.inverse_transform(predicted_price)
 
-# User Input for prediction
-day_input = st.number_input("Enter day number for prediction (e.g., 1 for the first day)", min_value=1, max_value=len(df_historical) + 30)
+        st.write(f"Predicted closing price for the next day: ${predicted_price[0][0]:.2f}")
 
-if st.button("Predict"):
-    prediction = model.predict([[day_input]])
-    st.write(f"Predicted closing price for Day {day_input}: ${prediction[0]:.2f}")
+        # Plotting
+        st.subheader('Price vs Predicted Price')
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=stock_data.index, y=stock_data['Close'], mode='lines', name='Actual Price'))
+        fig.add_trace(go.Scatter(x=pd.date_range(start=stock_data.index[-1] + pd.Timedelta(days=1), periods=1), 
+                                  y=predicted_price.flatten(), mode='markers', name='Predicted Price'))
+        st.plotly_chart(fig)
 
-# Plotting the historical data and predictions
-plt.figure(figsize=(10, 5))
-plt.plot(df_historical['Day'], df_historical['Close'], label='Historical Prices', color='blue')
-plt.scatter(day_input, prediction, color='red', label='Predicted Price', zorder=5)
-plt.xlabel("Days")
-plt.ylabel("Stock Price (USD)")
-plt.title(f"{stock_symbol} Stock Price History and Prediction")
-plt.legend()
-plt.grid()
-plt.show()
-
-# Display the plot in Streamlit
-st.pyplot(plt)
+if __name__ == "__main__":
+    main()
