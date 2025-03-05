@@ -1,81 +1,71 @@
+import streamlit as st
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import yfinance as yf
-import streamlit as st
 from sklearn.preprocessing import MinMaxScaler
-from keras.models import Sequential
-from keras.layers import LSTM, Dense, Dropout
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense
+import plotly.graph_objs as go
 
-# Function to load and preprocess data
-def load_data(stock, start, end):
-    df = yf.download(stock, start=start, end=end)
-    return df
+# Function to create dataset for prediction
+def create_dataset(data, look_back=100):
+    X, Y = [], []
+    for i in range(len(data) - look_back):
+        X.append(data[i:(i + look_back), 0])
+        Y.append(data[i + look_back, 0])
+    return np.array(X), np.array(Y)
 
-# Function to create LSTM model
-def create_model(input_shape):
-    model = Sequential()
-    model.add(LSTM(units=50, return_sequences=True, input_shape=input_shape))
-    model.add(Dropout(0.2))
-    model.add(LSTM(units=50, return_sequences=False))
-    model.add(Dropout(0.2))
-    model.add(Dense(units=1))
-    model.compile(optimizer='adam', loss='mean_squared_error')
-    return model
+# Streamlit app
+def main():
+    st.title("Stock Price Prediction App")
+    st.sidebar.title('Stock Price Forecasting App')
 
-# Streamlit app layout
-st.title('Stock Price Prediction App')
+    # User input for stock ticker symbol
+    stock_symbol = st.sidebar.text_input('Enter Stock Ticker Symbol (e.g., MSFT):')
 
-# User inputs
-stock = st.text_input('Enter Stock Ticker', 'AAPL')
-start_date = st.date_input('Start Date', pd.to_datetime('2010-01-01'))
-end_date = st.date_input('End Date', pd.to_datetime('today'))
+    # Date range input
+    start_date = st.sidebar.date_input('Select Start Date:', pd.to_datetime('2000-01-01'))
+    end_date = st.sidebar.date_input('Select End Date:', pd.to_datetime('today'))
 
-# Load data
-if st.button('Predict'):
-    data = load_data(stock, start_date, end_date)
-    st.write(data)
+    if stock_symbol:
+        # Load stock data
+        stock_data = yf.download(stock_symbol, start=start_date, end=end_date)
+        st.subheader('Stock Data')
+        st.write(stock_data)
 
-    # Data preprocessing
-    scaler = MinMaxScaler(feature_range=(0, 1))
-    scaled_data = scaler.fit_transform(data['Close'].values.reshape(-1, 1))
+        # Data preprocessing
+        data = stock_data['Close'].values.reshape(-1, 1)
+        scaler = MinMaxScaler(feature_range=(0, 1))
+        scaled_data = scaler.fit_transform(data)
 
-    # Prepare training data
-    train_data_len = int(np.ceil(len(scaled_data) * 0.8))
-    train_data = scaled_data[0:train_data_len]
+        # Create training and testing datasets
+        look_back = 100
+        X, y = create_dataset(scaled_data, look_back)
+        X = X.reshape(X.shape[0], X.shape[1], 1)
 
-    x_train, y_train = [], []
-    for i in range(100, len(train_data)):
-        x_train.append(train_data[i-100:i, 0])
-        y_train.append(train_data[i, 0])
-    x_train = np.array(x_train)
-    y_train = np.array(y_train)
+        # Train the model
+        model = Sequential()
+        model.add(Dense(100, activation='relu', input_shape=(look_back, 1)))
+        model.add(Dense(1))
+        model.compile(optimizer='adam', loss='mean_squared_error')
+        model.fit(X, y, epochs=50, batch_size=32)
 
-    # Reshape for LSTM
-    x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], 1))
+        # Predict future prices
+        last_100_days = scaled_data[-look_back:]
+        last_100_days = last_100_days.reshape((1, look_back, 1))
+        predicted_price = model.predict(last_100_days)
+        predicted_price = scaler.inverse_transform(predicted_price)
 
-    # Create and train model
-    model = create_model((x_train.shape[1], 1))
-    model.fit(x_train, y_train, batch_size=1, epochs=1)
+        st.write(f"Predicted closing price for the next day: ${predicted_price[0][0]:.2f}")
 
-    # Testing the model
-    test_data = scaled_data[train_data_len - 100:]
-    x_test, y_test = [], data['Close'][train_data_len:].values
-    for i in range(100, len(test_data)):
-        x_test.append(test_data[i-100:i, 0])
-    x_test = np.array(x_test)
-    x_test = np.reshape(x_test, (x_test.shape[0], x_test.shape[1], 1))
+        # Plotting
+        st.subheader('Price vs Predicted Price')
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=stock_data.index, y=stock_data['Close'], mode='lines', name='Actual Price'))
+        fig.add_trace(go.Scatter(x=pd.date_range(start=stock_data.index[-1] + pd.Timedelta(days=1), periods=1), 
+                                  y=predicted_price.flatten(), mode='markers', name='Predicted Price'))
+        st.plotly_chart(fig)
 
-    # Predictions
-    predictions = model.predict(x_test)
-    predictions = scaler.inverse_transform(predictions)
-
-    # Plotting results
-    train = data[:train_data_len]
-    valid = data[train_data_len:]
-    valid['Predictions'] = predictions
-
-    st.subheader('Training Data')
-    st.line_chart(train['Close'])
-    st.subheader('Validation Data')
-    st.line_chart(valid[['Close', 'Predictions']])
+if __name__ == "__main__":
+    main()
